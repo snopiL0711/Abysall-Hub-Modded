@@ -1,9 +1,7 @@
 return function(Window)
 	local Changelog = {
-		"17/10/2026",
-		"<font color='rgb(0, 255, 0)'>+ Added Skip Gate Room</font>",
-		"<font color='rgb(0, 255, 0)'>+ Added Crazy Cart Creak</font>",
-		"<font color='rgb(255, 255, 0)'>~ Boost Infinite Items</font>",
+		"18/10/2026",
+		"<font color='rgb(255, 255, 0)'>~ Fixed Crazy Cart Creak</font>",
 	}
 
 	local function cloneref(service)
