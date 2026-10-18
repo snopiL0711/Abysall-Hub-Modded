@@ -340,10 +340,8 @@ local function SafeLoadComponent(key)
     if key == "InfoTab" and (not src or #src < 50) then
         src = [==[return function(Window)
 	local Changelog = {
-		"17/10/2026",
-		"<font color='rgb(0, 255, 0)'>+ Added Skip Gate Room</font>",
-		"<font color='rgb(0, 255, 0)'>+ Added Crazy Cart Creak</font>",
-		"<font color='rgb(255, 255, 0)'>~ Boost Infinite Items</font>",
+		"18/10/2026",
+		"<font color='rgb(255, 255, 0)'>~ Fixed Crazy Cart Creak</font>",
 	}
 
 	local function cloneref(service)
@@ -3271,7 +3269,6 @@ do
 	local isSkippingGate = false
 	local skipGateTask = nil
 	local skippedGateRooms = {}
-	local maxRoomReached = 0
 
 	local function IsHotelFloor()
 		local currentFloor = (GameData and GameData:FindFirstChild("Floor") and GameData.Floor.Value) or Floor
@@ -3280,6 +3277,7 @@ do
 
 	local function IsGateRoom(room)
 		if not room or not room:IsA("Model") then return false end
+		if room.Name == "100" or tonumber(room.Name) == 100 then return false end
 
 		-- Проверка рычагов и моделей решеток в отеле
 		if room:FindFirstChild("LeverForGate", true)
@@ -3354,21 +3352,16 @@ do
 	end
 
 	local function ProcessGateRoom(roomNum)
+		if tonumber(roomNum) == 100 then return end
 		if skippedGateRooms[roomNum] then return end
 		if isSkippingGate then return end
 		if not Toggles.SkipGateRooms or not Toggles.SkipGateRooms.Value then return end
 		if not IsHotelFloor() then return end
 
 		local curNum = tonumber(LocalPlayer:GetAttribute("CurrentRoom"))
-		if curNum then
-			if curNum > maxRoomReached then
-				maxRoomReached = curNum
-			end
-			-- Если игрок уже прошел дальше этой комнаты, не скипаем повторно
-			if curNum > roomNum or roomNum < maxRoomReached then
-				skippedGateRooms[roomNum] = true
-				return
-			end
+		if curNum and curNum > roomNum then
+			skippedGateRooms[roomNum] = true
+			return
 		end
 
 		local roomsContainer = CurrentRooms or Services.Workspace:FindFirstChild("CurrentRooms")
@@ -3385,18 +3378,12 @@ do
 
 		skipGateTask = task.spawn(function()
 			local startTime = tick()
-			local openStartTime = nil
 
-			while Toggles.SkipGateRooms.Value and IsHotelFloor() and (tick() - startTime < 35) do
+			while Toggles.SkipGateRooms.Value and IsHotelFloor() and (tick() - startTime < 45) do
 				local cur = tonumber(LocalPlayer:GetAttribute("CurrentRoom"))
-				if cur then
-					if cur > maxRoomReached then
-						maxRoomReached = cur
-					end
-					if cur > roomNum then
-						skippedGateRooms[roomNum] = true
-						break
-					end
+				if cur and cur > roomNum then
+					skippedGateRooms[roomNum] = true
+					break
 				end
 
 				local door = GetRoomDoor(roomNum)
@@ -3410,27 +3397,47 @@ do
 
 				local char = Character or (LocalPlayer and LocalPlayer.Character)
 				if char then
-					local pivot = door:GetPivot()
-					char:PivotTo(pivot * CFrame.new(0, -1, 0))
-					pcall(function() door.ClientOpen:Fire() end)
-					pcall(function() door.ClientOpen:FireServer() end)
+					local doorPivot = door:GetPivot()
+					local isOpened = IsDoorOpened(door)
+
+					if isOpened then
+						-- Дверь открыта: гарантированно перемещаем игрока вперед сквозь проем в следующую комнату
+						local nextRoom = roomsContainer and roomsContainer:FindFirstChild(tostring(roomNum + 1))
+						local targetCFrame = nil
+
+						if nextRoom then
+							local nextPos = nextRoom:GetPivot().Position
+							local doorPos = doorPivot.Position
+							local dir = Vector3.new(nextPos.X - doorPos.X, 0, nextPos.Z - doorPos.Z)
+							if dir.Magnitude > 1 then
+								local forwardDir = dir.Unit
+								local targetPos = doorPos + forwardDir * 5 + Vector3.new(0, -1, 0)
+								targetCFrame = CFrame.new(targetPos, targetPos + forwardDir)
+							end
+						end
+
+						if not targetCFrame then
+							targetCFrame = doorPivot * CFrame.new(0, -1, -5)
+						end
+
+						char:PivotTo(targetCFrame)
+					else
+						-- Дверь закрыта: стоим прямо у двери и открываем
+						char:PivotTo(doorPivot * CFrame.new(0, -1, 0))
+						pcall(function() door.ClientOpen:Fire() end)
+						pcall(function() door.ClientOpen:FireServer() end)
+					end
 				end
 
-				-- Если дверь открыта (например, заранее выбита Рашем или открылась игроком)
-				if IsDoorOpened(door) then
-					if not openStartTime then
-						openStartTime = tick()
-					end
-					-- Даем 0.8 секунды для перехода в следующую комнату
-					if tick() - openStartTime >= 0.8 then
-						skippedGateRooms[roomNum] = true
-						break
-					end
-				end
-
-				task.wait(0.15)
+				task.wait(0.12)
 			end
-			skippedGateRooms[roomNum] = true
+
+			-- Помечаем комнату пройденной ТОЛЬКО если игрок действительно оказался в следующей комнате
+			local finalCur = tonumber(LocalPlayer:GetAttribute("CurrentRoom"))
+			if finalCur and finalCur > roomNum then
+				skippedGateRooms[roomNum] = true
+			end
+
 			isSkippingGate = false
 			skipGateTask = nil
 		end)
@@ -3447,12 +3454,10 @@ do
 		end
 
 		table.clear(skippedGateRooms)
-		maxRoomReached = 0
 		if not IsHotelFloor() then return end
 
 		local curNum = tonumber(LocalPlayer:GetAttribute("CurrentRoom"))
 		if curNum then
-			maxRoomReached = curNum
 			ProcessGateRoom(curNum)
 		end
 	end)
@@ -3466,15 +3471,17 @@ do
 		if Toggles.SkipGateRooms and Toggles.SkipGateRooms.Value and IsHotelFloor() then
 			local curNum = tonumber(LocalPlayer:GetAttribute("CurrentRoom"))
 			if curNum then
-				if curNum < maxRoomReached - 3 and curNum <= 1 then
-					-- Сброс при рестарте забега
-					maxRoomReached = curNum
+				if curNum <= 1 then
+					-- Сброс при новом забеге
 					table.clear(skippedGateRooms)
-				elseif curNum > maxRoomReached then
-					maxRoomReached = curNum
+				else
+					-- Помечаем все пройденные позади комнаты, чтобы при возврате не тпхало
+					for r = 0, curNum - 1 do
+						skippedGateRooms[r] = true
+					end
 				end
 
-				if not skippedGateRooms[curNum] and curNum >= maxRoomReached then
+				if not skippedGateRooms[curNum] then
 					ProcessGateRoom(curNum)
 				end
 			end
@@ -3484,18 +3491,19 @@ do
 	-- Периодическая проверка на случай поздней догрузки ассетов комнаты (только на этаже Hotel)
 	task.spawn(function()
 		while true do
-			task.wait(1.0)
+			task.wait(0.6)
 			if Toggles.SkipGateRooms and Toggles.SkipGateRooms.Value and IsHotelFloor() and not isSkippingGate then
 				local curNum = tonumber(LocalPlayer:GetAttribute("CurrentRoom"))
 				if curNum then
-					if curNum < maxRoomReached - 3 and curNum <= 1 then
-						maxRoomReached = curNum
+					if curNum <= 1 then
 						table.clear(skippedGateRooms)
-					elseif curNum > maxRoomReached then
-						maxRoomReached = curNum
+					else
+						for r = 0, curNum - 1 do
+							skippedGateRooms[r] = true
+						end
 					end
 
-					if not skippedGateRooms[curNum] and curNum >= maxRoomReached then
+					if not skippedGateRooms[curNum] then
 						ProcessGateRoom(curNum)
 					end
 				end
@@ -4703,26 +4711,32 @@ do
 	local function SetCartAntiFling(cart, enable)
 		if not cart or not cart.Parent then return end
 		local char = LocalPlayer and LocalPlayer.Character
-		local hrp = char and char:FindFirstChild("HumanoidRootPart")
-		if not hrp then return end
+		if not char then return end
 
 		local prim = cart.PrimaryPart or cart:FindFirstChild("Collider") or cart:FindFirstChild("Base")
 		if not prim or not prim:IsA("BasePart") then return end
 
 		if enable then
-			if not antiFlingConstraints[cart] or not antiFlingConstraints[cart].Parent then
-				pcall(function()
-					local ncc = Instance.new("NoCollisionConstraint")
-					ncc.Name = "CrazyCartAntiFling"
-					ncc.Part0 = hrp
-					ncc.Part1 = prim
-					ncc.Parent = prim
-					antiFlingConstraints[cart] = ncc
-				end)
+			if not antiFlingConstraints[cart] then
+				antiFlingConstraints[cart] = {}
+				for _, part in ipairs(char:GetChildren()) do
+					if part:IsA("BasePart") then
+						pcall(function()
+							local ncc = Instance.new("NoCollisionConstraint")
+							ncc.Name = "CrazyCartAntiFling"
+							ncc.Part0 = part
+							ncc.Part1 = prim
+							ncc.Parent = prim
+							table.insert(antiFlingConstraints[cart], ncc)
+						end)
+					end
+				end
 			end
 		else
 			if antiFlingConstraints[cart] then
-				pcall(function() antiFlingConstraints[cart]:Destroy() end)
+				for _, ncc in ipairs(antiFlingConstraints[cart]) do
+					pcall(function() ncc:Destroy() end)
+				end
 				antiFlingConstraints[cart] = nil
 			end
 		end
@@ -4787,17 +4801,154 @@ do
 
 	-- Высокопроизводительный кэш для CrazyCartCreak (0% просадки FPS)
 	local activeCartEntries = {}
+	local takenCarts = {}
+	local disabledPlayerJoints = {}
+	local promptConnections = {}
 	local cachedCreak = nil
 	local cachedTargetPart = nil
 	local lastScanTime = 0
-	local lastReattachTime = 0
+
+	local function DetachPlayerJoints(cart)
+		local char = LocalPlayer and LocalPlayer.Character
+		if not char then return end
+
+		for _, desc in ipairs(cart:GetDescendants()) do
+			if desc:IsA("JointInstance") or desc:IsA("WeldConstraint") then
+				local p0 = desc.Part0
+				local p1 = desc.Part1
+				if (p0 and p0:IsDescendantOf(char)) or (p1 and p1:IsDescendantOf(char)) then
+					if desc.Enabled then
+						pcall(function() desc.Enabled = false end)
+						table.insert(disabledPlayerJoints, desc)
+					end
+				end
+			elseif desc:IsA("Constraint") then
+				local a0 = desc.Attachment0
+				local a1 = desc.Attachment1
+				local p0 = a0 and a0.Parent
+				local p1 = a1 and a1.Parent
+				if (p0 and p0:IsDescendantOf(char)) or (p1 and p1:IsDescendantOf(char)) then
+					if desc.Enabled then
+						pcall(function() desc.Enabled = false end)
+						table.insert(disabledPlayerJoints, desc)
+					end
+				end
+			end
+		end
+
+		for _, desc in ipairs(char:GetDescendants()) do
+			if desc:IsA("JointInstance") or desc:IsA("WeldConstraint") then
+				local p0 = desc.Part0
+				local p1 = desc.Part1
+				if (p0 and p0:IsDescendantOf(cart)) or (p1 and p1:IsDescendantOf(cart)) then
+					if desc.Enabled then
+						pcall(function() desc.Enabled = false end)
+						table.insert(disabledPlayerJoints, desc)
+					end
+				end
+			elseif desc:IsA("Constraint") then
+				local a0 = desc.Attachment0
+				local a1 = desc.Attachment1
+				local p0 = a0 and a0.Parent
+				local p1 = a1 and a1.Parent
+				if (p0 and p0:IsDescendantOf(cart)) or (p1 and p1:IsDescendantOf(cart)) then
+					if desc.Enabled then
+						pcall(function() desc.Enabled = false end)
+						table.insert(disabledPlayerJoints, desc)
+					end
+				end
+			end
+		end
+	end
+
+	local function RestorePlayerJoints()
+		for _, j in ipairs(disabledPlayerJoints) do
+			if j and j.Parent then
+				pcall(function() j.Enabled = true end)
+			end
+		end
+		table.clear(disabledPlayerJoints)
+	end
+
+	local function IsCartHeldByPlayer(cart)
+		if not cart or not cart.Parent or IsNoiseTv(cart) then return false end
+		local char = LocalPlayer and LocalPlayer.Character
+		if not char then return false end
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+
+		for _, desc in ipairs(cart:GetDescendants()) do
+			if desc:IsA("JointInstance") or desc:IsA("WeldConstraint") then
+				local p0 = desc.Part0
+				local p1 = desc.Part1
+				if (p0 and p0:IsDescendantOf(char)) or (p1 and p1:IsDescendantOf(char)) then
+					return true
+				end
+			elseif desc:IsA("Constraint") then
+				local a0 = desc.Attachment0
+				local a1 = desc.Attachment1
+				local p0 = a0 and a0.Parent
+				local p1 = a1 and a1.Parent
+				if (p0 and p0:IsDescendantOf(char)) or (p1 and p1:IsDescendantOf(char)) then
+					return true
+				end
+			end
+		end
+
+		for _, desc in ipairs(char:GetDescendants()) do
+			if desc:IsA("JointInstance") or desc:IsA("WeldConstraint") then
+				local p0 = desc.Part0
+				local p1 = desc.Part1
+				if (p0 and p0:IsDescendantOf(cart)) or (p1 and p1:IsDescendantOf(cart)) then
+					return true
+				end
+			elseif desc:IsA("Constraint") then
+				local a0 = desc.Attachment0
+				local a1 = desc.Attachment1
+				local p0 = a0 and a0.Parent
+				local p1 = a1 and a1.Parent
+				if (p0 and p0:IsDescendantOf(cart)) or (p1 and p1:IsDescendantOf(cart)) then
+					return true
+				end
+			end
+		end
+
+		if cart:GetAttribute("Attached") == true or cart:GetAttribute("Holding") == true or cart:GetAttribute("Held") == true then
+			return true
+		end
+		if cart:GetAttribute("Holder") == LocalPlayer.Name or cart:GetAttribute("Player") == LocalPlayer.Name or cart:GetAttribute("User") == LocalPlayer.Name then
+			return true
+		end
+		if char:GetAttribute("HoldingCart") == true or char:GetAttribute("Cart") then
+			return true
+		end
+
+		if hrp then
+			local prim = cart.PrimaryPart or cart:FindFirstChild("Collider") or cart:FindFirstChild("Base")
+			if prim and (prim.Position - hrp.Position).Magnitude < 4.5 then
+				return true
+			end
+		end
+
+		return false
+	end
+
+	local function GetCartFromPrompt(prompt)
+		if not prompt then return nil end
+		local cur = prompt.Parent
+		while cur and cur ~= workspace and cur ~= game do
+			if cur:IsA("Model") and (cur.Name == "ShoppingCart" or cur:FindFirstChild("CartAttached") or cur:FindFirstChild("Handles")) and not IsNoiseTv(cur) then
+				return cur
+			end
+			cur = cur.Parent
+		end
+		return nil
+	end
 
 	local function StopAllActiveCarts()
 		for _, entry in ipairs(activeCartEntries) do
 			local cart = entry.Cart
 			if cart and cart.Parent then
 				SetCartAntiFling(cart, false)
-				Functions.ReleaseCart(cart)
 				for _, bp in ipairs(entry.BaseParts) do
 					if bp and bp.Parent then
 						pcall(function()
@@ -4809,6 +4960,8 @@ do
 			end
 		end
 		table.clear(activeCartEntries)
+		table.clear(takenCarts)
+		RestorePlayerJoints()
 		cachedCreak = nil
 		cachedTargetPart = nil
 	end
@@ -4830,7 +4983,7 @@ do
 
 	local function RefreshCrazyCarts(forceScan)
 		local now = tick()
-		if not forceScan and (now - lastScanTime < 1.5) then return end
+		if not forceScan and (now - lastScanTime < 1.0) then return end
 		lastScanTime = now
 
 		-- 1. Валидация монстра Creak
@@ -4838,28 +4991,37 @@ do
 			cachedCreak = Functions.GetCreakMonster()
 			cachedTargetPart = cachedCreak and (cachedCreak:FindFirstChild("HumanoidRootPart") or cachedCreak.PrimaryPart or cachedCreak:FindFirstChildWhichIsA("BasePart")) or nil
 		end
-		if not cachedCreak then return end
 
-		local creakPivot = cachedTargetPart and cachedTargetPart.CFrame or cachedCreak:GetPivot()
+		-- 2. Фильтрация только тех тележек, которые игрок взял на E
+		local validTaken = {}
+		for cart in pairs(takenCarts) do
+			if cart and cart.Parent and cart:IsDescendantOf(workspace) then
+				table.insert(validTaken, cart)
+			else
+				takenCarts[cart] = nil
+			end
+		end
 
-		-- 2. Получение и сортировка тележек
-		local allCarts = Functions.GetShoppingCarts()
-		if #allCarts == 0 then return end
-
-		table.sort(allCarts, function(a, b)
-			local posA = a:GetPivot().Position
-			local posB = b:GetPivot().Position
-			return (posA - creakPivot.Position).Magnitude < (posB - creakPivot.Position).Magnitude
-		end)
+		-- Если игрок не взял тележку через Prompt, проверяем, вдруг он уже держит её
+		if #validTaken == 0 then
+			for _, cart in ipairs(Functions.GetShoppingCarts()) do
+				if IsCartHeldByPlayer(cart) then
+					takenCarts[cart] = true
+					DetachPlayerJoints(cart)
+					table.insert(validTaken, cart)
+					break
+				end
+			end
+		end
 
 		local maxCarts = (Options.CrazyCartCount and Options.CrazyCartCount.Value) or 1
 		maxCarts = math.clamp(maxCarts, 1, 5)
 
-		-- 3. Освобождение неиспользуемых тележек
+		-- 3. Формирование activeCartEntries
 		local activeSet = {}
 		local newEntries = {}
-		for i = 1, math.min(#allCarts, maxCarts) do
-			local cart = allCarts[i]
+		for i = 1, math.min(#validTaken, maxCarts) do
+			local cart = validTaken[i]
 			activeSet[cart] = true
 			local existing = nil
 			for _, e in ipairs(activeCartEntries) do
@@ -4872,16 +5034,14 @@ do
 				table.insert(newEntries, existing)
 			else
 				local entry = BuildCartEntry(cart)
-				Functions.AttachCart(cart, cachedCreak)
 				table.insert(newEntries, entry)
 			end
 		end
 
-		-- Очистка старых, которые больше не активны
+		-- 4. Очистка старых
 		for _, oldEntry in ipairs(activeCartEntries) do
 			if not activeSet[oldEntry.Cart] and oldEntry.Cart and oldEntry.Cart.Parent then
 				SetCartAntiFling(oldEntry.Cart, false)
-				Functions.ReleaseCart(oldEntry.Cart)
 				for _, bp in ipairs(oldEntry.BaseParts) do
 					if bp and bp.Parent then
 						pcall(function()
@@ -4895,11 +5055,33 @@ do
 
 		activeCartEntries = newEntries
 
-		-- Обновление анти-флинга
 		local antiFling = (Toggles.CrazyCartAntiFling and Toggles.CrazyCartAntiFling.Value) or false
 		for _, entry in ipairs(activeCartEntries) do
 			SetCartAntiFling(entry.Cart, antiFling)
+			DetachPlayerJoints(entry.Cart)
 		end
+	end
+
+	local function RegisterTakenCart(cart)
+		if not cart or not cart.Parent or IsNoiseTv(cart) then return end
+		if takenCarts[cart] then return end
+
+		takenCarts[cart] = true
+		DetachPlayerJoints(cart)
+		Functions.PrepareCartParts(cart)
+
+		local antiFling = (Toggles.CrazyCartAntiFling and Toggles.CrazyCartAntiFling.Value) or false
+		SetCartAntiFling(cart, antiFling)
+
+		Functions.Notify({ Title = "Crazy Cart Creak", Body = "Cart grabbed with [E]! Circling Creak started." })
+		RefreshCrazyCarts(true)
+	end
+
+	local function UnregisterTakenCart(cart)
+		if not cart then return end
+		takenCarts[cart] = nil
+		SetCartAntiFling(cart, false)
+		RefreshCrazyCarts(true)
 	end
 
 	Toggles.CrazyCartCreak:OnChanged(function(Value)
@@ -4908,24 +5090,79 @@ do
 			Connections.CrazyCartCreak = nil
 		end
 
+		for key, conn in pairs(promptConnections) do
+			pcall(function() conn:Disconnect() end)
+		end
+		table.clear(promptConnections)
+
 		if not Value then
 			pcall(StopAllActiveCarts)
 			return
 		end
 
-		-- Первоначальная инициализация
+		-- Подключение отслеживания взятия тележки на E через ProximityPromptService
+		local promptService = Services.ProximityPromptService or game:GetService("ProximityPromptService")
+		if promptService then
+			promptConnections.GlobalPrompt = promptService.PromptTriggered:Connect(function(prompt, player)
+				if player == LocalPlayer or not player then
+					local cart = GetCartFromPrompt(prompt)
+					if cart then
+						RegisterTakenCart(cart)
+					end
+				end
+			end)
+		end
+
+		-- Подключение событий внутри каждой доступной тележки
+		for _, cart in ipairs(Functions.GetShoppingCarts()) do
+			local prompt = cart:FindFirstChild("CartPrompt", true)
+			if prompt and prompt:IsA("ProximityPrompt") then
+				local cId = "Prompt_" .. tostring(cart)
+				promptConnections[cId] = prompt.Triggered:Connect(function(player)
+					if player == LocalPlayer or not player then
+						RegisterTakenCart(cart)
+					end
+				end)
+			end
+
+			local att = cart:FindFirstChild("CartAttached")
+			if att then
+				local cId = "Att_" .. tostring(cart)
+				if att:IsA("BindableEvent") then
+					promptConnections[cId] = att.Event:Connect(function(...)
+						RegisterTakenCart(cart)
+					end)
+				elseif att:IsA("RemoteEvent") then
+					promptConnections[cId] = att.OnClientEvent:Connect(function(...)
+						RegisterTakenCart(cart)
+					end)
+				end
+			end
+
+			local rel = cart:FindFirstChild("CartReleased")
+			if rel then
+				local cId = "Rel_" .. tostring(cart)
+				if rel:IsA("BindableEvent") then
+					promptConnections[cId] = rel.Event:Connect(function(...)
+						UnregisterTakenCart(cart)
+					end)
+				elseif rel:IsA("RemoteEvent") then
+					promptConnections[cId] = rel.OnClientEvent:Connect(function(...)
+						UnregisterTakenCart(cart)
+					end)
+				end
+			end
+		end
+
+		-- Первоначальная проверка: если игрок уже держит тележку
 		RefreshCrazyCarts(true)
 
 		if #activeCartEntries == 0 then
-			Functions.Notify({ Title = "Crazy Cart Creak", Body = "No Shopping Carts found nearby." })
-		end
-		if not cachedCreak then
-			Functions.Notify({ Title = "Crazy Cart Creak", Body = "Creak is not currently spawned." })
+			Functions.Notify({ Title = "Crazy Cart Creak", Body = "Grab a cart with [E] to start circling Creak!" })
+		else
+			Functions.Notify({ Title = "Crazy Cart Creak", Body = "Cart detected! Circling started." })
 		end
 
-		lastReattachTime = tick()
-
-		-- Ультра-легкий Heartbeat цикл (только CFrame расчет и применение готовой скорости)
 		Connections.CrazyCartCreak = Services.RunService.Heartbeat:Connect(function()
 			if not Toggles.CrazyCartCreak.Value then
 				if Connections.CrazyCartCreak then
@@ -4937,32 +5174,24 @@ do
 
 			local t = tick()
 
-			-- Фоновое обновление тележек раз в 1.5 секунды
-			if t - lastScanTime >= 1.5 then
+			if t - lastScanTime >= 1.0 then
 				RefreshCrazyCarts(false)
+			end
+
+			local numCarts = #activeCartEntries
+			if numCarts == 0 then
+				return
 			end
 
 			if not cachedCreak or not cachedCreak.Parent or not cachedCreak:IsDescendantOf(workspace) then
 				return
 			end
 
-			local numCarts = #activeCartEntries
-			if numCarts == 0 then return end
-
 			local creakPivot = cachedTargetPart and cachedTargetPart.CFrame or cachedCreak:GetPivot()
 			local speed = (Options.CrazyCartSpeed and Options.CrazyCartSpeed.Value) or 35
 			local radius = (Options.CrazyCartRadius and Options.CrazyCartRadius.Value) or 4.0
 			local force = (Options.CrazyCartForce and Options.CrazyCartForce.Value) or 220
 			local pattern = (Options.CrazyCartPattern and Options.CrazyCartPattern.Value) or "Chaotic Thrash"
-
-			-- Периодический пинг закрепления (каждые 1.5с)
-			local shouldReattach = (t - lastReattachTime >= 1.5)
-			if shouldReattach then
-				lastReattachTime = t
-				for _, entry in ipairs(activeCartEntries) do
-					Functions.AttachCart(entry.Cart, cachedCreak)
-				end
-			end
 
 			for index, entry in ipairs(activeCartEntries) do
 				local cart = entry.Cart
@@ -5020,7 +5249,7 @@ do
 				local transform = CFrame.new(offsetX, offsetY, offsetZ) * CFrame.Angles(rotX + flip, rotY, rotZ + flip)
 				cart:PivotTo(creakPivot * transform)
 
-				-- Скорости применяются ТОЛЬКО к предварительно кэшированным деталям (0 вызовов GetDescendants)
+				-- Скорости применяются ТОЛЬКО к предварительно кэшированным деталям
 				local vel = Vector3.new(
 					(math.random(-100, 100) / 100) * force,
 					(math.random(-100, 100) / 100) * force,
@@ -11347,3 +11576,4 @@ end
 
 Abysall.Interface.ApplySettingsTab(Window)
 Functions.Notify({ Title = "Successfully loaded in " .. math.floor((tick() - LoadStart) * 1000) / 1000 .. " seconds." , Body = "Press '" .. tostring(Options.MenuKeybind.Value) .. "' to toggle the UI."})
+print("i allive")
